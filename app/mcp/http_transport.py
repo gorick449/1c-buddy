@@ -147,8 +147,11 @@ async def mcp_endpoint(request: Request, response: Response):
         store = _get_session_store(request)
         sess = store.get(session_id)
         if not sess:
-            # Per spec: 404 for unknown/expired session
-            return JSONResponse(status_code=404, content={"error": "Unknown or expired session"})
+            # Temporary: instead of 404, revive the session under the same id
+            # so clients that don't auto-reinitialize keep working.
+            sess = store.revive(session_id)
+            logger.debug(f"Revived expired/unknown session: {session_id}")
+            response.headers["MCP-Session-Id"] = sess.session_id
 
         # Dispatch methods
         handlers = McpHandlers(_get_mcp_upstream_client(request), store)

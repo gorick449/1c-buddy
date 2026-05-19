@@ -40,6 +40,11 @@ class McpSessionStore:
         self._sessions[sid] = sess
         return sess
 
+    def revive(self, session_id: str, protocol_version: str = "") -> McpSession:
+        sess = McpSession(session_id=session_id, protocol_version=protocol_version)
+        self._sessions[session_id] = sess
+        return sess
+
     def get(self, session_id: str) -> Optional[McpSession]:
         sess = self._sessions.get(session_id)
         if not sess:
