@@ -27,6 +27,11 @@ logging.basicConfig(
     ]
 )
 
+# Сторонние логгеры — только WARNING, чтобы не тонуть в DEBUG-шуме соединений.
+# Наши app.* логи остаются на уровне LOG_LEVEL.
+for _noisy in ("httpcore", "httpx", "hpack", "h11"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
