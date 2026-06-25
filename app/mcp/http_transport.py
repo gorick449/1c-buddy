@@ -178,8 +178,13 @@ async def mcp_endpoint(request: Request, response: Response):
                     content=JsonRpcResponse(jsonrpc="2.0", id=req_id, result=result.model_dump()).model_dump(exclude_none=True),
                 )
             except ApiError as e:
+                logger.warning(
+                    "MCP tools/list ApiError: status=%s message=%s data=%s",
+                    e.status_code, e.message, e.data,
+                )
                 return _jsonrpc_error(req_id, -32603, "Internal error", _api_error_data(e))
             except Exception as e:
+                logger.exception("MCP tools/list unexpected error")
                 return _jsonrpc_error(req_id, -32603, "Internal error", {"detail": str(e)})
 
         if method == "tools/call":
@@ -197,8 +202,13 @@ async def mcp_endpoint(request: Request, response: Response):
             except ToolNotFoundError:
                 return _jsonrpc_error(req_id, -32601, "Tool not found", {"name": params.name})
             except ApiError as e:
+                logger.warning(
+                    "MCP tools/call ApiError: tool=%s status=%s message=%s data=%s",
+                    params.name, e.status_code, e.message, e.data,
+                )
                 return _jsonrpc_error(req_id, -32603, "Internal error", _api_error_data(e))
             except Exception as e:
+                logger.exception("MCP tools/call unexpected error: tool=%s", params.name)
                 return _jsonrpc_error(req_id, -32603, "Internal error", {"detail": str(e)})
 
         # Unknown method

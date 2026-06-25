@@ -97,6 +97,9 @@ class McpUpstreamToolsClient:
     @staticmethod
     def _extract_upstream_error_data(response: httpx.Response) -> Dict[str, Any]:
         data: Dict[str, Any] = {"upstream_status": response.status_code}
+        request_id = response.headers.get("X-Request-ID")
+        if request_id:
+            data["upstream_request_id"] = request_id
         text = (response.text or "").strip()
         if not text:
             return data
@@ -476,6 +479,12 @@ class McpUpstreamToolsClient:
         async with self.client.stream(
             "POST", url, json=payload, headers=request_headers
         ) as response:
+            logger.debug(
+                "MCP upstream stream response: conversation_id=%s status=%s x-request-id=%s",
+                conversation_id,
+                response.status_code,
+                response.headers.get("X-Request-ID"),
+            )
             if response.status_code != 200:
                 await response.aread()
                 raise ApiError(
