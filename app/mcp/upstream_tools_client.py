@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -20,6 +21,18 @@ from ..onec_models import (
 
 logger = logging.getLogger(__name__)
 _RE_REASONING_BLOCK = re.compile(r"<reasoning>.*?</reasoning>\s*", re.DOTALL)
+
+# Транзиентный ConnectTimeout до апстрима (code.1c.ai) — основная причина
+# периодических -32603. Эти ошибки возникают ДО отправки байтов запроса, поэтому
+# повтор безопасен (идемпотентен). Ошибки чтения/стрима тут НЕ ретраятся —
+# сообщение могло быть частично отправлено.
+_CONNECT_RETRY_EXCEPTIONS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+_CONNECT_MAX_ATTEMPTS = 3
+_CONNECT_RETRY_BACKOFF = 0.5  # секунды, умножается на номер попытки
 
 
 class McpUpstreamToolsClient:
@@ -52,6 +65,30 @@ class McpUpstreamToolsClient:
     async def close(self) -> None:
         await self.client.aclose()
 
+    async def _retry_on_connect(self, factory, *, what: str):
+        """Повторить корутину-фабрику при транзиентных ошибках подключения к апстриму.
+
+        ConnectTimeout/ConnectError/PoolTimeout происходят до отправки байтов
+        запроса, поэтому повторный запуск factory безопасен. Прочие ошибки
+        (ReadError, RemoteProtocolError и т.п.) пробрасываются без повтора.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, _CONNECT_MAX_ATTEMPTS + 1):
+            try:
+                return await factory()
+            except _CONNECT_RETRY_EXCEPTIONS as e:
+                last_exc = e
+                logger.warning(
+                    "MCP upstream connect error on %s (attempt %d/%d): %r",
+                    what, attempt, _CONNECT_MAX_ATTEMPTS, e,
+                )
+                if attempt < _CONNECT_MAX_ATTEMPTS:
+                    await asyncio.sleep(_CONNECT_RETRY_BACKOFF * attempt)
+        raise ApiError(
+            f"Upstream connection failed after {_CONNECT_MAX_ATTEMPTS} attempts "
+            f"on {what}: {last_exc!r}"
+        )
+
     async def create_conversation(
         self, programming_language: Optional[str] = None
     ) -> str:
@@ -68,11 +105,16 @@ class McpUpstreamToolsClient:
             url,
             request_data.model_dump(),
         )
-        try:
-            resp = await self.client.post(
+        async def _do_post():
+            return await self.client.post(
                 url,
                 json=request_data.model_dump(),
                 headers={"Session-Id": ""},
+            )
+
+        try:
+            resp = await self._retry_on_connect(
+                _do_post, what="create_conversation"
             )
         except httpx.RequestError as e:
             raise ApiError(f"Network error creating conversation: {str(e)}")
@@ -432,6 +474,17 @@ class McpUpstreamToolsClient:
         return await self._collect_stream(conversation_id, payload)
 
     async def _collect_stream(
+        self, conversation_id: str, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        # Ретраим только установку соединения. ConnectTimeout возникает до приёма
+        # ответа, поэтому повтор всего стрима безопасен; ошибки в середине стрима
+        # (после получения данных) прокидываются без повтора.
+        return await self._retry_on_connect(
+            lambda: self._collect_stream_once(conversation_id, payload),
+            what=f"stream(conv={conversation_id})",
+        )
+
+    async def _collect_stream_once(
         self, conversation_id: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
         result: Dict[str, Any] = {
